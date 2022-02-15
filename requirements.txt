@@ -1,0 +1,7 @@
+mongoengine==0.23.1
+pymongo==3.12.0
+pymongo-inmemory==0.2.3
+click~=8.0.3
+shodan~=1.25.0
+python-dateutil==2.8.2
+netaddr==0.8.0
