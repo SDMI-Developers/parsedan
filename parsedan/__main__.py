@@ -38,10 +38,14 @@ def cli():
 @click.option('--output-original', default=False)
 @click.option('--output-partial-summary/--no-output-partial-summary', help="Output the summary to json/csv file every 1000 results. May slow down the operation once file starts to get big. DEFAULT: False", default=False)
 @click.option('--limit', help='The number of results you want to download. -1 to download all the data possible.', default=-1, type=int)
-@click.option('--filetype', help='Type of file to create, options are "csv", "json", or "both". Default "csv"', default=FileType.csv, type=FileType)
+@click.option('--filetype', help='Type of file to create, options are "csv", "json", or "both". Default "csv"', default="json", type=str)
 @click.argument('filename', metavar='<filename>')
 @click.argument('query', metavar='<search query>', nargs=-1)
-def start(output_original, output_partial_summary, limit, filetype, filename, query):
+def start(output_original, output_partial_summary, limit, filetype: str, filename, query):
+
+    if filetype == "csv":
+        print("NOT IMPLEMENTED for CSV yet!")
+
     logger.info(
         f"Called start with option values: Output Original: {output_original} Output Partial Summary: {output_partial_summary} Limit: {limit} Filetype: {filetype} Filename: {filename} Query: {query}")
     cli_handler.echo_header()

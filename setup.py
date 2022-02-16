@@ -12,11 +12,11 @@ with open('requirements.txt') as f:
 # This call to setup() does all the work
 setup(
     name="parsedan",
-    version="0.0.1",
+    version="0.0.3a01",
     description="A shodan parser that given a query will download results and parse them into CSV or JSON files while also scoring them.",
     long_description="README",
     long_description_content_type="text/markdown",
-    url="",
+    url="https://github.com/SDMI-Developers/parsedan",
     author="Louisiana State University at Stephenson Disaster Management Institute",
     author_email="sdmidev@lsu.edu",
     license="MIT",
