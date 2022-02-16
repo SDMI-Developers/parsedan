@@ -1,15 +1,31 @@
+import os
 import pathlib
-from setuptools import setup
+from setuptools import setup, Command
 
+# Useful for having a seperate README file.
 # The directory containing this file
 #HERE = pathlib.Path(__file__).parent
 
 # The text of the README file
 #README = (HERE / "README.md").read_text()
+
+
 with open('requirements.txt') as f:
+    """
+    Open and parse the requirements.txt file to put into install_requires
+    """
     required = f.read().splitlines()
 
-# This call to setup() does all the work
+class CleanCommand(Command):
+    """Custom clean command to tidy up the project root."""
+    user_options = []
+    def initialize_options(self):
+        pass
+    def finalize_options(self):
+        pass
+    def run(self):
+        os.system('rm -vrf ./build ./dist ./*.pyc ./*.tgz ./*.egg-info')
+
 setup(
     name="parsedan",
     version="0.0.3a01",
@@ -24,4 +40,7 @@ setup(
     packages=["parsedan", "parsedan.db"],
     include_package_data=True,
     install_requires=required,
+    cmdclass={
+        'clean': CleanCommand,
+    }
 )
