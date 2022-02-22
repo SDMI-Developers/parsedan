@@ -136,7 +136,7 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
         # if os.path.exists("./cve_data.json"):
         #    shodan_parser.load_cve_json()
 
-        def save(partial: bool = False):
+        def _save(partial: bool = False):
             shodan_parser.save_to_db()
             if partial and output_partial_summary == False:
                 return
@@ -169,7 +169,7 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
                 shodan_parser.add_line(line=line)
 
                 if i % save_every == 0:
-                    save(True)
+                    _save(partial=True)
 
                 if output_original:
                     logger.debug("Writing line to gziped file")
@@ -178,6 +178,7 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
 
                 # Stop parsing
                 if i >= limit:
+                    logger.info("Limit hit, done parsing!")
                     print(f"Line: {i}/{limit}")
                     break
                 i += 1
@@ -188,13 +189,13 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
         except shodan.APIError as e:
             logger.exception(f"api info returned error! Error: {e}")
             logger.info("Saving what data we currently have!")
-            save()
+            _save()
 
         except Exception as e:
             logger.exception(f"Unknown exception occured! {e}")
             sys.exit()
 
-        save()
+        _save()
 
 
 @cli.command(help="Set shodan key.")
