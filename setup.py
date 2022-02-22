@@ -28,7 +28,7 @@ class CleanCommand(Command):
 
 setup(
     name="parsedan",
-    version="0.0.3a04",
+    version="0.0.3a05",
     description="A shodan parser that given a query will download results and parse them into CSV or JSON files while also scoring them.",
     long_description="README",
     long_description_content_type="text/markdown",
@@ -42,5 +42,9 @@ setup(
     install_requires=required,
     cmdclass={
         'clean': CleanCommand,
-    }
+    },
+    entry_points='''
+        [console_scripts]
+        parsedan=parsedan.__main__:cli
+    '''
 )
