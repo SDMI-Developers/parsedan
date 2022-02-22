@@ -27,7 +27,7 @@ class CleanCommand(Command):
 
 setup(
     name="parsedan",
-    version="0.0.3a07",
+    version="0.0.3a08",
     description="A shodan parser that given a query will download results and parse them into CSV or JSON files while also scoring them.",
     long_description=README,
     long_description_content_type="text/markdown",
