@@ -20,7 +20,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/SDMI-Developers/parsedan">
-    <img src="assets/SDMI-Logo-Fullsize.png" alt="Logo" width="1000" height="178">
+    <img src="https://raw.githubusercontent.com/SDMI-Developers/parsedan/master/assets/SDMI-Logo-Fullsize.png" alt="Logo" width="1000" height="178">
   </a>
 
 <h3 align="center">Parsedan</h3>
