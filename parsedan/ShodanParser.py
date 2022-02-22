@@ -775,7 +775,7 @@ class ShodanParser:
         logger.debug(f"CSV headers built {headers}")
 
         logger.info("Opening csv file to write to!")
-        with open(filename, 'w') as csvfile:
+        with open(filename, 'w', newline="") as csvfile:
             writer = csv.DictWriter(
                 csvfile, fieldnames=headers, extrasaction='ignore')
             writer.writeheader()
