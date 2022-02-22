@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+logger = logging.getLogger(__name__)
 
 class CLIHandler:
     path: str
@@ -12,7 +13,7 @@ class CLIHandler:
 
     @staticmethod
     def echo_header():
-        logging.debug("Printing header")
+        logger.debug("Printing header")
         click.echo("-------------------------------------------\n"
                    "--------- Parsedan Shodan Parser ----------\n"
                    "---- Louisiana State University - SDMI ----\n"
@@ -28,7 +29,7 @@ class CLIHandler:
         self.save_config()
 
     def save_config(self):
-        logging.debug("Saving config!")
+        logger.debug("Saving config!")
         # Write the above sections to config.ini file
         with open(self.path, 'w') as conf:
             self.config.write(conf)
@@ -37,10 +38,10 @@ class CLIHandler:
         self.config = ConfigParser(allow_no_value=True)
 
         if not os.path.exists(self.path):
-            logging.info("Config file doesn't exist! Creating...")
+            logger.info("Config file doesn't exist! Creating...")
             self.create_config()
         else:
-            logging.info("Config file exists! Reading...")
+            logger.info("Config file exists! Reading...")
             self.config.read(self.path)
 
     def __init__(self, dir):
