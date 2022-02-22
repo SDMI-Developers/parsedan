@@ -23,33 +23,33 @@ Path(home_dir).mkdir(exist_ok=True)
 logger = logging.getLogger("Parsedan." + __name__)
 
 
-if __name__ == "__main__":
-    logging.basicConfig(filename=f"{home_dir}/output.log", level=logging.INFO,
+def _set_log_config(level):
+    logging.basicConfig(filename=f"{home_dir}/output.log", level=level,
                         format='%(asctime)s %(name)s %(levelname)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+
+if __name__ == "__main__":
+   _set_log_config(logging.INFO)
     
 
 cli_handler = CLIHandler(dir=home_dir)
 
 
 @click.group()
-def cli():
-    pass
+@click.option('--d', 'debug_option', help="Set logging level to debug mode", count=True)
+def cli(debug_option):
+    if debug_option:
+        logging.root.setLevel(logging.DEBUG)
 
 
 @cli.command()
 @click.option('--output-original/--no-output-original', help="Output the original data that is returned from shodan into a seperate json file. DEFAULT: False", default=False)
 @click.option('--output-partial-summary/--no-output-partial-summary', help="Output the summary to json/csv file every 1000 results. May slow down the operation once file starts to get big. DEFAULT: False", default=False)
 @click.option('--limit', help='The number of results you want to download. -1 to download all the data possible. DEFAULT: -1', default=-1, type=int)
-@click.option('--filetype', help='Type of file to create, options are "csv", "json", or "both". Default "csv"', default="json", type=str)
+@click.option('--filetype', help='Type of file to create, options are "csv", "json", or "both". Default "csv"', default="csv", type=str)
 @click.argument('output-filename', metavar='<filename>')
 @click.argument('query', metavar='<search query>', nargs=-1)
 def start(output_original, output_partial_summary, limit, filetype: str, output_filename, query):
-
-    if filetype == "csv":
-        print("NOT IMPLEMENTED for CSV yet!")
-        logger.warning("CSV support not implemented yet!")
-        return
-
+    
     logger.info("Called start with options - " + str(locals()))
     cli_handler.echo_header()
 
@@ -62,6 +62,7 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
         click.ClickException(
             "Please provide an api key by calling `parsedan init [APIKEY]`").show()
         sys.exit(1)
+
 
     api = shodan.Shodan(API_KEY)
 
@@ -78,15 +79,20 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
         logger.exception("Empty filename")
         raise click.ClickException('Empty filename')
 
-    # Add the appropriate extension if it's not there atm
-    if not output_filename.endswith('.json'):
-        logger.debug("Appended filename to output file")
-        output_filename += '.json'
+    # Check if appropiate file type was provided.
+    filetype = filetype.lower()
+    if filetype not in ["csv", "json", "both"]:
+        logger.exception(f"Invalid file type: {filetype}")
+        raise click.ClickException(f"Invalid file type: {filetype}")
+    
+    # Remove .csv or .json if it was added. This gets added by our output function
+    output_filename.replace(".json", "")
+    output_filename.replace(".csv", "")
 
     logger.info("Querying API.")
-
     print("Querying Shodan API...", end="\r")
     try:
+        #TODO: Make a timeout function since this seems to not timeout on its own.
         total = api.count(query)['total']
         info = api.info()
         
@@ -138,7 +144,7 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
                 print("Outputting partial file!", end="\r")
             else:
                 print(f"Outputting file to {output_filename}!")
-            shodan_parser.output_computer_summary(file_loc=output_filename, file_type=FileType.json)
+            shodan_parser.output_computer_summary(file_loc=output_filename, file_type=FileType.str_to_enum(filetype))
 
         try:
             logger.info("Get search cursors.")

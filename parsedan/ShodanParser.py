@@ -1,3 +1,4 @@
+import csv
 import hashlib
 import sys
 import time
@@ -14,17 +15,33 @@ from pymongo.results import BulkWriteResult
 from requests import get
 import logging
 from parsedan.db.mongomodels import *
+from bson.json_util import loads, dumps, DEFAULT_JSON_OPTIONS
 # importing enum for enumerations
 import enum
- 
+
 # creating enumerations using class
+
+
 class FileType(enum.Enum):
+    both = 0
     json = 1
     csv = 2
 
+    @staticmethod
+    def str_to_enum(filetype: str):
+        filetype = filetype.lower()
+        if filetype == "json":
+            return FileType.json
+        if filetype == "csv":
+            return FileType.csv
+        return FileType.both
+
+
 logger = logging.getLogger(__name__)
 
+
 class Utility:
+
     @staticmethod
     def get_gzipped_json(url: str):
         """Given a URL that contains gzipped content, will return decompressed JSON.
@@ -344,7 +361,6 @@ class ShodanParser:
 
         return {"computer": vuln_computer, "ports": ports, "cves": cves}
 
-
     def is_file_aready_parsed(self, file_md5) -> bool:
         """
         Determines whether a file was already parsed in the DB by checking the MD5 value against existing DB entries.
@@ -391,7 +407,8 @@ class ShodanParser:
             output_file_loc (str): The location and filename of the output file.
             current_state (bool): Whether to output the current object state, or all objects from the DB
         """
-        logger.info(f"Outputting file to json with file location: {output_file_loc}")
+        logger.info(
+            f"Outputting file to json with file location: {output_file_loc}")
         if current_state:
             with open(output_file_loc, "w") as out_file:
                 for key in self.computers:
@@ -486,7 +503,7 @@ class ShodanParser:
 
         for ip in cleaned_data:
             computer = cleaned_data[ip]["computer"]._data
-            
+
             try:
                 # If these arnt deleted the db will think its a new comp and overwrite old ones.
                 del computer["port_history"]
@@ -519,7 +536,8 @@ class ShodanParser:
         logger.debug("Saving computers to database")
         result: BulkWriteResult = VulnerableComputer._get_collection().bulk_write(operations)
 
-        logger.info(f"Done saving data! Time: {time.time() - insert_data_time} Added {result.upserted_count}, Updated {result.modified_count}")
+        logger.info(
+            f"Done saving data! Time: {time.time() - insert_data_time} Added {result.upserted_count}, Updated {result.modified_count}")
 
         if calculate_scores:
             self.calculate_scores(list(self.computers.keys()))
@@ -674,25 +692,23 @@ class ShodanParser:
         # Clear cached cvss scores
         self._cvss_cache = {}
         # Writing changes to db
-        logger.debug(f"Saving scores to db") 
+        logger.debug(f"Saving scores to db")
 
         VulnerableComputer._get_collection().bulk_write(operations)
         logger.info(f"Done calculating scores! Time: {time.time() - start}")
-
 
     def output_computer_summary(self, file_loc: str, file_type: FileType = FileType.json):
         logger.info(f"Outputting summary {file_loc} {file_type}")
 
         logger.debug("Getting computers")
-        vuln_computers = VulnerableComputer.objects.to_json()
-        if file_type == FileType.json:
-            self.output_json(json.loads(vuln_computers), file_loc)
-        else:
-            logger.warn("CSV not implmented")
+        vuln_computers = VulnerableComputer.objects
 
-    # TODO: Move to utility class
-    def output_cve_to_json(self):
-        self.output_json(json.loads(CVE.objects.to_json()), "cve_data.json")
+        if file_type == FileType.json or file_type == FileType.both:
+            self.output_json(filename=file_loc,
+                             vulnerable_computers=vuln_computers)
+        if file_type == FileType.csv or file_type == FileType.both:
+            self.output_csv(filename=file_loc,
+                            vulnerable_computers=vuln_computers)
 
     def load_cve_json(self):
         # Loading or Opening the json file
@@ -707,10 +723,98 @@ class ShodanParser:
         cve_table = CVE._get_collection()
         cve_table.insert_many(file_data)
 
-    def output_csv(self, obj: dict, filename: str = "results.json"):
-        print(f"Writing {filename} to csv file")
+    def output_csv(self, vulnerable_computers:List[VulnerableComputer], filename: str):
+        """ Outputs the given vulnerable computers objects to csv
 
-    def output_json(self, obj: dict, filename: str = "results.json"):
+        Args:
+            filename (str): The name/ location of file to output
+            vulnerable_computers (List[VulnerableComputer]): A list of vulnerable computers from mongoengine
+        """
+
+        if not filename.endswith('.csv'):
+            logger.debug("Filename didnt contain .csv")
+            filename += ".csv"
+
+        logger.info(f"Outputting to csv File: {filename}")
+        if len(vulnerable_computers) == 0:
+            logger.info("No objs to output to csv file.")
+            return
+
+        logger.info(f"Outputting to csv File: {filename}")
+
+        logger.debug("Building headers.")
+        headers = vulnerable_computers[0].to_mongo().to_dict()
+
+        # Renaming ip ip_str to ip for the headers
+        headers["ip"] = headers.pop("ip_str")
+
+        headers.pop("port_history", None)
+        headers.pop("cve_history", None)
+
+        headers.pop("_id", None)
+
+        headers = list(headers.keys())
+
+        cve_dates = set()
+        port_dates = set()
+
+        logger.debug("Getting dates for headers")
+        for o in vulnerable_computers:
+            for cve in o.cve_history:
+                cve_dates.add("Open CVE's on {}".format(cve.date_observed))
+            for port in o.port_history:
+                port_dates.add("Open Port's on {}".format(port.date_observed))
+
+        logger.debug("Sorting CVS dates and ports")
+        cve_dates = sorted(cve_dates)
+        port_dates = sorted(port_dates)
+
+        headers += port_dates
+        headers += cve_dates
+
+        logger.debug(f"CSV headers built {headers}")
+
+        logger.info("Opening csv file to write to!")
+        with open(filename, 'w') as csvfile:
+            writer = csv.DictWriter(
+                csvfile, fieldnames=headers, extrasaction='ignore')
+            writer.writeheader()
+            for o in vulnerable_computers:
+                csv_row = o.to_mongo().to_dict()
+                csv_row["ip"] = csv_row.pop("ip_str")
+
+                # Build port dates into object
+                for date in port_dates:
+                    csv_row[date] = ""
+                for date in cve_dates:
+                    csv_row[date] = ""
+
+                for port in o.port_history:
+                    csv_row[f"Open Port's on {port.date_observed}"] += f"{port.port} "
+                for cve in o.cve_history:
+                    csv_row[f"Open CVE's on {cve.date_observed}"] += f"{cve.cveName} "
+
+                logging.debug(f"Writing row to file: {filename} {csv_row}")
+                writer.writerow(csv_row)
+
+    def output_json(self, filename: str, vulnerable_computers:List[VulnerableComputer]):
+        """ Outputs the given vulnerable computers objects to json
+
+        Args:
+            filename (str): The name/ location of file to output
+            vulnerable_computers (List[VulnerableComputer]): A list of vulnerable computers from mongoengine
+        """
+        if not filename.endswith('.json'):
+            logger.debug("Filename didnt contain .json")
+            filename += ".json"
+
         logger.info(f"Writing {filename} to json file")
         with open(filename, "w") as fp:
-            json.dump(obj, fp, indent=4, default=str)
+            for computer in vulnerable_computers:
+                # Getting the BSON version of the row
+                row = computer.to_mongo()
+                # Setting the date time to be readable
+                DEFAULT_JSON_OPTIONS.datetime_representation = 2
+
+                logging.debug(f"Writing row to file: {filename} {row}")
+                fp.write(dumps(row) + "\n")
