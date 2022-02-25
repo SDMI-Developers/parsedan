@@ -28,8 +28,8 @@ def _set_log_config(level):
                         format='%(asctime)s %(name)s %(levelname)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
 if __name__ == "__main__":
-   _set_log_config(logging.INFO)
-    
+    _set_log_config(logging.INFO)
+
 
 cli_handler = CLIHandler(dir=home_dir)
 
@@ -37,32 +37,72 @@ cli_handler = CLIHandler(dir=home_dir)
 @click.group()
 @click.option('--d', 'debug_option', help="Set logging level to debug mode", count=True)
 def cli(debug_option):
+    # Set to logging level debug if specified
     if debug_option:
         logging.root.setLevel(logging.DEBUG)
 
+
+
+
+def _query_shodan_api(api: shodan, query: str) -> int:
+    """Querys the shodan API for info on the provided api key
+
+    Args:
+        api (shodan): a shodan object
+        query (str): The query for the shodan api
+
+    Returns:
+        int: total number of results that can be queried
+    """
+    logger.info("Querying API.")
+    print("Querying Shodan API...", end="\r")
+    try:
+        # TODO: Make a timeout function since this seems to not timeout on its own.
+        print(query)
+        total = api.count(query)['total']
+        info = api.info()
+
+        logger.info(f"Got total and api info: {total} {info}")
+    except Exception:
+        logger.exception("api info returned error!")
+        raise click.ClickException(
+            'The Shodan API is unresponsive at the moment, please try again later.')
+    # Erase previous line
+    _erase_line()
+
+    # Print some summary information about the download request
+    click.echo('Search query:\t\t\t{}'.format(query))
+    click.echo('Total number of results:\t{}'.format(total))
+    click.echo('Query credits left:\t\t{}'.format(info['unlocked_left']))
+    
+    return total
+
+def _erase_line():
+    """
+    Shortcut to erase entire console line
+    """
+    print("\033[K", end="\r")
 
 @cli.command()
 @click.option('--output-original/--no-output-original', help="Output the original data that is returned from shodan into a seperate json file. DEFAULT: False", default=False)
 @click.option('--output-partial-summary/--no-output-partial-summary', help="Output the summary to json/csv file every 1000 results. May slow down the operation once file starts to get big. DEFAULT: False", default=False)
 @click.option('--limit', help='The number of results you want to download. -1 to download all the data possible. DEFAULT: -1', default=-1, type=int)
-@click.option('--filetype', help='Type of file to create, options are "csv", "json", or "both". Default "csv"', default="csv", type=str)
+# @click.option('--whitelist-file', help='Provide a location to a newline delimited file of ip ranges you want to make as important.', default=None, type=str)
+@click.option('--filetype', help='Type of file to create, options are "csv", "json", or "both". Default "both"', default="both", type=str)
 @click.argument('output-filename', metavar='<filename>')
 @click.argument('query', metavar='<search query>', nargs=-1)
-def start(output_original, output_partial_summary, limit, filetype: str, output_filename, query):
-    
+def start(output_original, output_partial_summary, limit, filetype: str, whitelist_file, output_filename, query):
     logger.info("Called start with options - " + str(locals()))
     cli_handler.echo_header()
 
-    logger.info("Reading config file for key")
+    logger.info("Reading config file for shodan api key")
 
     API_KEY = cli_handler.config["SHODAN"].get("api_key")
-
     if not API_KEY:
         logger.info("No API_Key provided!")
         click.ClickException(
             "Please provide an api key by calling `parsedan init [APIKEY]`").show()
         sys.exit(1)
-
 
     api = shodan.Shodan(API_KEY)
 
@@ -84,31 +124,14 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
     if filetype not in ["csv", "json", "both"]:
         logger.exception(f"Invalid file type: {filetype}")
         raise click.ClickException(f"Invalid file type: {filetype}")
-    
+
     # Remove .csv or .json if it was added. This gets added by our output function
     output_filename.replace(".json", "")
     output_filename.replace(".csv", "")
 
-    logger.info("Querying API.")
-    print("Querying Shodan API...", end="\r")
-    try:
-        #TODO: Make a timeout function since this seems to not timeout on its own.
-        total = api.count(query)['total']
-        info = api.info()
-        
-        logger.info(f"Got total and api info: {total} {info}")
-    except Exception:
-        logger.exception("api info returned error!")
-        raise click.ClickException(
-            'The Shodan API is unresponsive at the moment, please try again later.')
-    # Erase previous line
-    print("                      ", end="\r")
-    # Print some summary information about the download request
-    click.echo('Search query:\t\t\t{}'.format(query))
-    click.echo('Total number of results:\t{}'.format(total))
-    click.echo('Query credits left:\t\t{}'.format(info['unlocked_left']))
-    click.echo('Output file:\t\t\t{}'.format(output_filename))
+    total = _query_shodan_api(api, query)
 
+    # Cant have a limit greater then total
     if limit > total:
         limit = total
 
@@ -122,19 +145,32 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
     logger.info("Creating mongodb client.")
     print("Creating and connecting to mongodb...", end="\r")
     with MongoClient() as client:
-        # Clearing previous line
-        print("                                     ", end="\r")
+        _erase_line()
+
         logger.info(f"Client created {client}")
 
         mongoDBConnection = f"mongodb://{client.HOST}:{client.address[1]}/shodan"
         logger.debug(f"MongoDB Connection String: {mongoDBConnection}")
 
+        # TODO: Move this to the ShodanParser class
         # Connect our ORM to the in-memory pymongo
         connect(host=mongoDBConnection)
+        
+        cve_data_path = os.path.join(home_dir, "cve_data.json")
 
-        # TODO: Load/Save this file in the users home directory.
-        # if os.path.exists("./cve_data.json"):
-        #    shodan_parser.load_cve_json()
+        if os.path.exists(cve_data_path):
+            logger.info("CVE Data exists")
+            print("Loading CVE data from cache.", end="\r")
+            shodan_parser.load_cve_json(cve_data_path)
+            
+        else:
+            print("Making sure CVE data is up-to-date", end="\r")
+            shodan_parser.check_cve_modified()
+
+            print("Saving updated CVE data to cache file.", end="\r")
+            shodan_parser.save_cve_to_json(cve_data_path)
+        # Erasing line left over from CVE stuff
+        _erase_line()
 
         def _save(partial: bool = False):
             shodan_parser.save_to_db()
@@ -144,14 +180,15 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
                 print("Outputting partial file!", end="\r")
             else:
                 print(f"Outputting file to {output_filename}!")
-            shodan_parser.output_computer_summary(file_loc=output_filename, file_type=FileType.str_to_enum(filetype))
+            shodan_parser.output_computer_summary(
+                file_loc=output_filename, file_type=FileType.str_to_enum(filetype))
 
         try:
             logger.info("Get search cursors.")
             print(f"Loading results...", end="\r")
             cursor = api.search_cursor(query, minify=False)
             # Clearing previous line
-            print("                   ", end="\r")
+            _erase_line()
 
             i = 1
             # Save every x results.
@@ -161,7 +198,6 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
                 gzipped_file_loc = "_shodan_" + output_filename + ".gz"
                 logger.info(f"Opening GZIPPed file at {gzipped_file_loc}")
                 fout = gzip.open(gzipped_file_loc, 'w')
-
 
             for cur in cursor:
                 print(f"Line: {i}/{limit}", end="\r")
@@ -173,8 +209,7 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
 
                 if output_original:
                     logger.debug("Writing line to gziped file")
-                    fout.write(line.encode('utf-8')) 
-                    
+                    fout.write(line.encode('utf-8'))
 
                 # Stop parsing
                 if i >= limit:
@@ -219,11 +254,13 @@ def init(shodan_key):
     cli_handler.config.set("SHODAN", "api_key", shodan_key)
     cli_handler.save_config()
 
+
 @cli.command(help="Removes your api key from the config")
 def remove_key():
     logger.info("Removing api key from config file.")
     cli_handler.config.remove_option("SHODAN", "api_key")
     cli_handler.save_config()
+
 
 if __name__ == "__main__":
     cli()
