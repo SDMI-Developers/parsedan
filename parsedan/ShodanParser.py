@@ -402,9 +402,9 @@ class ShodanParser:
                 self.computers[ip] = self.parse_mongo_json_line(
                     line_data, self.computers[ip])
         except KeyError as e:
-            logging.warn(f"Error reading key {e}")
-        except ValueError:
-            logging.warn(f"JSON error for that line! {e}")
+            logger.warning(f"Error reading key {e}")
+        except ValueError as e:
+            logger.warning(f"JSON error for that line! {e}")
 
     def parse_json_file(self, json_file_loc: str):
         """
