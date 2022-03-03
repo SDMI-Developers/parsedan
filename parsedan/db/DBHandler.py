@@ -27,7 +27,7 @@ class DBHandler:
         logger.info(f"connecting to db with string {self.db_connection_string}")
         mongoengine.connect(host=self.db_connection_string)
 
-    def save_parsed_file(file_md5: str, json_file_loc: str):
+    def save_parsed_file(self, file_md5: str, json_file_loc: str):
         """ Save the given md5/loc to the db so we can tell if 
         a file has been parsed before.
 
@@ -41,7 +41,7 @@ class DBHandler:
         parsed_file.datetime_parsed = datetime.datetime.now()
         parsed_file.save()
 
-    def file_already_parsed(file_md5: str) -> bool:
+    def file_already_parsed(self, file_md5: str) -> bool:
         """
         Determines whether a file was already parsed in the DB by checking the MD5 value against existing DB entries.
 
