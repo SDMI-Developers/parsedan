@@ -58,7 +58,6 @@ def _query_shodan_api(api: shodan, query: str) -> int:
     print("Querying Shodan API...", end="\r")
     try:
         # TODO: Make a timeout function since this seems to not timeout on its own.
-        print(query)
         total = api.count(query)['total']
         info = api.info()
 
@@ -156,21 +155,21 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
         # Connect our ORM to the in-memory pymongo
         shodan_parser = ShodanParser(connection_string=mongo_db_connection)
         
-        cve_data_path = os.path.join(home_dir, "cve_data.json")
+        # cve_data_path = os.path.join(home_dir, "cve_data.json")
 
-        if os.path.exists(cve_data_path):
-            logger.info("CVE Data exists")
-            print("Loading CVE data from cache.", end="\r")
-            shodan_parser.load_cve_json(cve_data_path)
+        # if os.path.exists(cve_data_path):
+        #     logger.info("CVE Data exists")
+        #     print("Loading CVE data from cache.", end="\r")
+        #     shodan_parser.load_cve_json(cve_data_path)
             
-        else:
-            print("Making sure CVE data is up-to-date", end="\r")
-            shodan_parser.check_cve_modified()
+        # else:
+        #     print("Making sure CVE data is up-to-date", end="\r")
+        #     shodan_parser.check_cve_modified()
 
-            print("Saving updated CVE data to cache file.", end="\r")
-            shodan_parser.save_cve_to_json(cve_data_path)
-        # Erasing line left over from CVE stuff
-        _erase_line()
+        #     print("Saving updated CVE data to cache file.", end="\r")
+        #     shodan_parser.save_cve_to_json(cve_data_path)
+        # # Erasing line left over from CVE stuff
+        # _erase_line()
 
         def _save(partial: bool = False):
             shodan_parser.save_to_db()
