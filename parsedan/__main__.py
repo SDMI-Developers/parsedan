@@ -91,7 +91,7 @@ def _erase_line():
 @click.option('--filetype', help='Type of file to create, options are "csv", "json", or "both". Default "both"', default="both", type=str)
 @click.argument('output-filename', metavar='<filename>')
 @click.argument('query', metavar='<search query>', nargs=-1)
-def start(output_original, output_partial_summary, limit, filetype: str, whitelist_file, output_filename, query):
+def start(output_original, output_partial_summary, limit, filetype: str, output_filename, query):
     logger.info("Called start with options - " + str(locals()))
     cli_handler.echo_header()
 
@@ -140,7 +140,7 @@ def start(output_original, output_partial_summary, limit, filetype: str, whiteli
         logger.debug("Setting limit to total.")
         limit = total
 
-    shodan_parser = ShodanParser()
+    
 
     logger.info("Creating mongodb client.")
     print("Creating and connecting to mongodb...", end="\r")
@@ -149,12 +149,12 @@ def start(output_original, output_partial_summary, limit, filetype: str, whiteli
 
         logger.info(f"Client created {client}")
 
-        mongoDBConnection = f"mongodb://{client.HOST}:{client.address[1]}/shodan"
-        logger.debug(f"MongoDB Connection String: {mongoDBConnection}")
-
-        # TODO: Move this to the ShodanParser class
+        # TODO: Move this to the DBHandler class
+        mongo_db_connection = f"mongodb://{client.HOST}:{client.address[1]}/shodan"
+        logger.debug(f"MongoDB Connection String: {mongo_db_connection}")
+        
         # Connect our ORM to the in-memory pymongo
-        connect(host=mongoDBConnection)
+        shodan_parser = ShodanParser(connection_string=mongo_db_connection)
         
         cve_data_path = os.path.join(home_dir, "cve_data.json")
 
