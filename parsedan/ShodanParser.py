@@ -391,7 +391,7 @@ class ShodanParser:
         try:
             logger.debug(f"Adding line: {line}")
             line_data = json.loads(line)
-            ip = line_data["ip"]
+            ip = float(line_data["ip"])
             # check if computer exists already
             if ip not in self.computers:
                 logger.debug("Computer doesn't exist in memory dict, adding.")
@@ -425,8 +425,6 @@ class ShodanParser:
         with open(json_file_loc, "r") as file:
             for line in file:
                 self.add_line(line)
-
-            
 
             #whitelist_time = time.time()
             # self.assign_whitelisted_ips()
