@@ -27,6 +27,7 @@ def _set_log_config(level):
     logging.basicConfig(filename=f"{home_dir}/output.log", level=level,
                         format='%(asctime)s %(name)s %(levelname)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
+
 if __name__ == "__main__":
     _set_log_config(logging.INFO)
 
@@ -40,8 +41,6 @@ def cli(debug_option):
     # Set to logging level debug if specified
     if debug_option:
         logging.root.setLevel(logging.DEBUG)
-
-
 
 
 def _query_shodan_api(api: shodan, query: str) -> int:
@@ -73,14 +72,16 @@ def _query_shodan_api(api: shodan, query: str) -> int:
     click.echo('Search query:\t\t\t{}'.format(query))
     click.echo('Total number of results:\t{}'.format(total))
     click.echo('Query credits left:\t\t{}'.format(info['unlocked_left']))
-    
+
     return total
+
 
 def _erase_line():
     """
     Shortcut to erase entire console line
     """
     print("\033[K", end="\r")
+
 
 @cli.command()
 @click.option('--output-original/--no-output-original', help="Output the original data that is returned from shodan into a seperate json file. DEFAULT: False", default=False)
@@ -139,8 +140,6 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
         logger.debug("Setting limit to total.")
         limit = total
 
-    
-
     logger.info("Creating mongodb client.")
     print("Creating and connecting to mongodb...", end="\r")
     with MongoClient() as client:
@@ -151,29 +150,29 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
         # TODO: Move this to the DBHandler class
         mongo_db_connection = f"mongodb://{client.HOST}:{client.address[1]}/shodan"
         logger.debug(f"MongoDB Connection String: {mongo_db_connection}")
-        
+
         # Connect our ORM to the in-memory pymongo
         shodan_parser = ShodanParser(connection_string=mongo_db_connection)
-        
-        # cve_data_path = os.path.join(home_dir, "cve_data.json")
 
-        # if os.path.exists(cve_data_path):
-        #     logger.info("CVE Data exists")
-        #     print("Loading CVE data from cache.", end="\r")
-        #     shodan_parser.load_cve_json(cve_data_path)
-            
-        # else:
-        #     print("Making sure CVE data is up-to-date", end="\r")
-        #     shodan_parser.check_cve_modified()
+        cve_data_path = os.path.join(home_dir, "cve_data.json")
 
-        #     print("Saving updated CVE data to cache file.", end="\r")
-        #     shodan_parser.save_cve_to_json(cve_data_path)
-        # # Erasing line left over from CVE stuff
-        # _erase_line()
+        if os.path.exists(cve_data_path):
+            logger.info("CVE Data exists")
+            print("Loading CVE data from cache.", end="\r")
+            shodan_parser.db_Handler.load_cve_json(cve_data_path)
+        else:
+            print("Making sure CVE data is up-to-date", end="\r")
+            shodan_parser.db_Handler.check_cve_modified()
+
+            print("Saving updated CVE data to cache file.", end="\r")
+            shodan_parser.db_Handler.save_cve_to_json(cve_data_path)
+           
+        # Erasing line left over from CVE stuff
+        _erase_line()
 
         def _save(partial: bool = False):
             shodan_parser.save_to_db()
-            if partial and output_partial_summary == False:
+            if partial and output_partial_summary is False:
                 return
             if partial and output_partial_summary:
                 print("Outputting partial file!", end="\r")

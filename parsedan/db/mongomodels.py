@@ -39,6 +39,7 @@ class CVEHistory(EmbeddedDocument):
     cveName = StringField()
     date_observed = DateField()
 
+
 class PortHistory(EmbeddedDocument):
     port = IntField()
     description = ListField()
@@ -74,10 +75,11 @@ class WhitelistRange(Document):
     minDecimal = IntField()
     maxDecimal = IntField()
 
+
 class DataSource(Document):
     '''
     Data source is used to determine where exactly the data came from.
-    
+
     Example: If data came from Shodan/LSP then it would be under that data source, if it came
     from Bernhard, then it fall under that source.
     '''
@@ -119,6 +121,7 @@ class VulnerableComputer(Document):
     high_score = FloatField(precision=2, default=0)
     port_history = EmbeddedDocumentListField(PortHistory)
     cve_history = EmbeddedDocumentListField(CVEHistory)
+
 
 class Vulnerabilities(Document):
     meta = {"collection": "vulnerabilities"}

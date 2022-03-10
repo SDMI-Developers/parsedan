@@ -1,18 +1,32 @@
 import datetime
+import json
 import logging
 import time
-from typing import List
+from typing import List, Union
+from parsedan import Utility
 from parsedan.db.mongomodels import CVE, ParsedFile, VulnerableComputer
 from pymongo.results import BulkWriteResult
 import mongoengine
 from pymongo import UpdateOne
-
+from dateutil import parser
+from gzip import decompress
+from typing import List
+from netaddr import IPNetwork
+from dateutil import parser
+from pymongo import UpdateOne
+from requests import get
+import logging
+from parsedan.Utility import Utility
+from parsedan.db.mongomodels import *
+from bson.json_util import loads, dumps, DEFAULT_JSON_OPTIONS
 
 logger = logging.getLogger(__name__)
 
+
 class DBHandler:
     """ Handles anything that happens to the database.
-    Makes it super easy to go from one db engine to the next for testing purposes (mongo/sqlalchemy)
+    Makes it super easy to go from one db engine to the next for testing
+    purposes (mongo/sqlalchemy)
     """
 
     def __init__(self, db_connection_string: str = None) -> None:
@@ -24,11 +38,158 @@ class DBHandler:
             logger.error("IN_MEMORY_NOT_IMPLEMENTED!")
 
     def _connect_to_db(self):
-        logger.info(f"connecting to db with string {self.db_connection_string}")
+        logger.info(
+            f"connecting to db with string {self.db_connection_string}")
         mongoengine.connect(host=self.db_connection_string)
 
+    def _clear_db(self):
+        """
+        Call this function if you want to clear the database but don't want to delete any of the downloaded
+        CVE data
+        """
+        VulnerableComputer.drop_collection()
+        ParsedFile.drop_collection()
+        return
+
+    def save_cve_to_json(self, json_file_loc):
+        """Saves the CVE table from the database to a file.
+        Useful if you want to reuse it in a new in-memory db
+        without redownloading all of the information.
+
+        Args:
+            json_file_loc (_type_): Location to save json file
+        """
+        try:
+            logger.info(f"Opening output stream {json_file_loc}")
+            with open(json_file_loc, 'w') as f:
+                cves = CVE.objects
+                for cve in cves:
+                    v = json.loads(cve.to_json())
+                    f.write(json.dumps(v) + "\n")
+        except Exception:
+            logger.exception(
+                "Unabled to save CVE file, will have to manually be redownloaded.")
+
+    def load_cve_json(self, json_file_loc):
+        """
+        Loads the json of CVE's into the database.
+        Useful for when you are running an in-memory db.
+
+        Args:
+            json_file_loc (_type_): Location of json file
+        """
+
+        file_data = []
+        # Loading or Opening the json file
+        try:
+            logger.info(f"Loading cve json file. {json_file_loc}")
+            with open(json_file_loc, 'r') as file:
+                for line in file:
+                    line = json.loads(line)
+                    line["lastModifiedDate"] = datetime.datetime.fromtimestamp(float(line["lastModifiedDate"]["$date"]) / 1000,
+                                                                               datetime.timezone.utc)
+                    line["publishedDate"] = datetime.datetime.fromtimestamp(float(line["publishedDate"]["$date"]) / 1000,
+                                                                            datetime.timezone.utc)
+                    file_data.append(line)
+
+                logger.info("inserting cve's into database")
+                cve_table = CVE._get_collection()
+                cve_table.insert_many(file_data)
+
+                # Make CVE's from file are up to date.
+                self.check_cve_modified()
+        except FileNotFoundError:
+            logger.info("CVE file not found, ignoring call")
+        except Exception as e:
+            logger.exception(f"Unhandled error! {e}")
+
+    def check_cve_modified(self):
+        logger.info("Checking if CVE has been updated in the last 8 days.")
+
+        # Checking if its been more then eight days since a cve was modified.
+        # If so we need to rebuild our cve table
+        last_modified: CVE = CVE.objects().order_by("-lastModifiedDate").first()
+        rebuild_cve_db = True
+        if last_modified:
+            days = (datetime.datetime.today().date() -
+                    last_modified.lastModifiedDate).days
+            if days < 8:
+                rebuild_cve_db = False
+
+        if rebuild_cve_db:
+            if last_modified is None:
+                logger.debug("No CVE data exists. Downloading from nist!")
+            else:
+                logger.debug(
+                    "Its been more then 8 days, Recreating nist table.")
+
+            print("Downloading data from NIST.\nThis may take a few minutes!")
+
+            # Recreate table with json dump
+            self.recreate_cve_table(_modify=False)
+        else:
+            logger.info("Downloading modified fields from nist.gov")
+            # Only add new and update modified fields to db.
+            url = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-modified.json.gz"
+            self.save_nist_cve_to_db(url)
+
+        logger.info("Finished CVE checks... Up to date!")
+
+    def recreate_cve_table(self, _modify: bool = None):
+        """
+        Will download one by one all files from nist.gov and
+        save them into the db.
+        """
+        if not _modify:
+            logger.info("\rDropping old CVE collection.")
+            # Delete every item from table
+            CVE.drop_collection()
+
+        # TODO: Look into alive-progress to keep track of progress
+        # https://github.com/rsalmei/alive-progress
+        # Build url from year 2002 (nist records start at 2002) to today
+        for year in range(2002, datetime.date.today().year + 1):
+            url = f"https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-{year}.json.gz"
+            logger.info(f"Downloading CVE-{year} from nist feeds.")
+
+            if self.save_nist_cve_to_db(url) is None:
+                logger.debug("NO CVE data saved")
+
+    def save_nist_cve_to_db(self, nvdNistGzJsonURL: str):
+        """
+        :param nvdNistGzJsonURL: URL of gzipped nist file.
+        :return: None if json failed to parse, else return results of
+        mongoengine insert
+        """
+        JSON = Utility.get_gzipped_json(nvdNistGzJsonURL)
+        if JSON is None:
+            return None
+
+        logger.info("Parsing CVE items")
+        operations = []
+        for cveItem in JSON["CVE_Items"]:
+            cve: CVE = CVE()
+            cve_name = cveItem["cve"]["CVE_data_meta"]["ID"]
+            cve.cveName = cve_name
+            if "baseMetricV2" in cveItem["impact"]:
+                cve.cvss20 = cveItem["impact"]["baseMetricV2"]["cvssV2"]["baseScore"]
+            if "baseMetricV3" in cveItem["impact"]:
+                cve.cvss30 = cveItem["impact"]["baseMetricV3"]["cvssV3"]["baseScore"]
+            cve.lastModifiedDate = parser.parse(cveItem["lastModifiedDate"])
+            cve.publishedDate = parser.parse(cveItem["publishedDate"])
+            cve_descriptions = cveItem["cve"]["description"]["description_data"]
+
+            if len(cve_descriptions) > 0:
+                cve.summary = cve_descriptions[0]["value"]
+
+            operations.append(UpdateOne({"_id": cve_name}, {
+                              "$set": cve._data}, upsert=True))
+
+        logger.info("Inserting cvss's into db")
+        return CVE._get_collection().bulk_write(operations)
+
     def save_parsed_file(self, file_md5: str, json_file_loc: str):
-        """ Save the given md5/loc to the db so we can tell if 
+        """ Save the given md5/loc to the db so we can tell if
         a file has been parsed before.
 
         Args:
@@ -41,22 +202,11 @@ class DBHandler:
         parsed_file.datetime_parsed = datetime.datetime.now()
         parsed_file.save()
 
-    def file_already_parsed(self, file_md5: str) -> bool:
-        """
-        Determines whether a file was already parsed in the DB by checking the MD5 value against existing DB entries.
-
-        Args:
-            file_md5 (str): The MD5 value of the json file.
-        Returns:
-            bool: Whether the file is already parsed are not
-        """
-        logger.info(f"Checking if file already parsed. {file_md5}")
-        file = ParsedFile.objects(file_md5=file_md5)
-
-        if len(file) > 0:
-            logger.info("Already parsed!")
-            return True
-        return False
+    def get_parsed_file(self, file_md5: str) -> Union[ParsedFile, None]:
+        try:
+            return ParsedFile.objects.get(file_md5=file_md5)
+        except Exception as e:
+            return None
 
     def _calculate_score(self, computer: VulnerableComputer, cvss_cache: dict) -> float:
         """ Calculates score for a given computer
@@ -166,7 +316,6 @@ class DBHandler:
 
         return score
 
-
     def _calculate_scores(self, ip_list: List):
         """
         :param ip_list: List of IP addresses that have changed so they need there score recalculated.
@@ -209,13 +358,11 @@ class DBHandler:
             i += LIMIT_AMT
             tot += len(cmps)
 
-
         # Writing changes to db
         logger.debug(f"Saving scores to db")
 
         VulnerableComputer._get_collection().bulk_write(operations)
         logger.info(f"Done calculating scores! Time: {time.time() - start}")
-
 
     def save_computers(self, computers: dict):
         """ Save computer given in dictionary form to the db
@@ -258,9 +405,9 @@ class DBHandler:
                 for port in computers[ip]["ports"][date]:
                     p = computers[ip]["ports"][date][port]
                     operations.append(UpdateOne({"_id": ip},
-                                            {"$addToSet": {"port_history": p._data}}, upsert=True))
-                    
-            # # Insert/Update cve history                             
+                                                {"$addToSet": {"port_history": p._data}}, upsert=True))
+
+            # # Insert/Update cve history
             for cve in computers[ip]["cves"]:
                 operations.append(UpdateOne({"_id": ip},
                                             {"$addToSet": {"cve_history": cve._data}}, upsert=True))
@@ -273,3 +420,23 @@ class DBHandler:
             f"Done saving data! Time: {time.time() - insert_data_time} Added {result.upserted_count}, Updated {result.modified_count}")
 
         self._calculate_scores(list(computers.keys()))
+
+    
+
+    def get_all_computers(self) -> List[VulnerableComputer]:
+        logger.debug("Getting all computers")
+        return VulnerableComputer.objects
+
+    def row_to_json(self, row):
+        """ Given a row, will return the json object of that row.
+
+        Args:
+            row (DB Row):
+        """
+        # Getting the BSON version of the row
+        row = row.to_mongo()
+
+        # Setting the date time to be readable
+        DEFAULT_JSON_OPTIONS.datetime_representation = 2
+
+        return dumps(row)

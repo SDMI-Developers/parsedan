@@ -1,23 +1,17 @@
 import csv
-import hashlib
 import sys
 import time
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime
 import json
-from gzip import decompress
-from json import JSONDecodeError
 from typing import List
-from mongoengine.errors import DoesNotExist
-from netaddr import IPNetwork
-from dateutil import parser
-from pymongo import UpdateOne
-from requests import get
 import logging
 from parsedan.Utility import Utility
 from parsedan.db.DBHandler import DBHandler
-from parsedan.db.mongomodels import *
 from bson.json_util import loads, dumps, DEFAULT_JSON_OPTIONS
 import enum
+from parsedan.db.mongomodels import *
+
+
 class FileType(enum.Enum):
     both = 0
     json = 1
@@ -35,107 +29,13 @@ class FileType(enum.Enum):
 
 logger = logging.getLogger(__name__)
 
+
 class ShodanParser:
 
     computers: dict = {}
+
     def __init__(self, connection_string: str = None) -> None:
         self.db_Handler = DBHandler(db_connection_string=connection_string)
-
-    def _clear_db(self):
-        """
-        Call this function you want to clear the database but don't want to delete any of the downloaded
-        CVE data
-        """
-        VulnerableComputer.drop_collection()
-        return
-
-    def check_cve_modified(self):
-        logger.info("Checking if CVE has been updated in the last 8 days.")
-
-
-        # Checking if its been more then eight days since a cve was modified.
-        # If so we need to rebuild our cve table
-        last_modified: CVE = CVE.objects().order_by("-lastModifiedDate").first()
-        rebuild_cve_db = True
-        if last_modified:
-            days = (datetime.datetime.today().date() -
-                    last_modified.lastModifiedDate).days
-            if days < 8:
-                rebuild_cve_db = False
-        
-        if rebuild_cve_db:
-            if last_modified is None:
-                logger.debug("No CVE data exists. Downloading from nist!")
-            else:
-                logger.debug("Its been more then 8 days, Recreating nist table.")
-
-            print("Downloading data from NIST.\nThis may take a few minutes!")
-
-            # Recreate table with json dump
-            self.recreate_cve_table(_modify=False)
-        else:
-            logger.info("Downloading modified fields from nist.gov")
-            # Only add new and update modified fields to db.
-            url = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-modified.json.gz"
-            self.save_nist_cve_to_db(url)
-
-        logger.info("Finished CVE checks... Up to date!")
-
-    
-
-    def recreate_cve_table(self, _modify: bool = None):
-        """
-        Will download one by one all files from nist.gov and
-        save them into the db.
-        """
-        if not _modify:
-            logger.info("\rDropping old CVE collection.")
-            # Delete every item from table
-            CVE.drop_collection()
-
-        # TODO: Look into alive-progress to keep track of progress
-        # https://github.com/rsalmei/alive-progress
-        # Build url from year 2002 (nist records start at 2002) to today
-        for year in range(2002, date.today().year + 1):
-            url = f"https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-{year}.json.gz"
-            logger.info(f"Downloading CVE-{year} from nist feeds.")
-            
-            if self.save_nist_cve_to_db(url) is None:
-                logger.debug("NO CVE data saved")
-    
-
-    def save_nist_cve_to_db(self, nvdNistGzJsonURL: str):
-        """
-
-        :param nvdNistGzJsonURL: URL of gzipped nist file.
-        :return: None if json failed to parse, else return results of mongoengine insert
-        """
-        JSON = Utility.get_gzipped_json(nvdNistGzJsonURL)
-        if JSON is None:
-            return None
-
-        logger.info("Parsing CVE items")
-        operations = []
-        for cveItem in JSON["CVE_Items"]:
-            cve: CVE = CVE()
-            cve_name = cveItem["cve"]["CVE_data_meta"]["ID"]
-            cve.cveName = cve_name
-            if "baseMetricV2" in cveItem["impact"]:
-                cve.cvss20 = cveItem["impact"]["baseMetricV2"]["cvssV2"]["baseScore"]
-            if "baseMetricV3" in cveItem["impact"]:
-                cve.cvss30 = cveItem["impact"]["baseMetricV3"]["cvssV3"]["baseScore"]
-            cve.lastModifiedDate = parser.parse(cveItem["lastModifiedDate"])
-            cve.publishedDate = parser.parse(cveItem["publishedDate"])
-            cve_descriptions = cveItem["cve"]["description"]["description_data"]
-            
-            if len(cve_descriptions) > 0:
-                cve.summary = cve_descriptions[0]["value"]
-
-            operations.append(UpdateOne({"_id": cve_name}, {
-                              "$set": cve._data}, upsert=True))
-
-        logger.info("Inserting cvss's into db")
-        return CVE._get_collection().bulk_write(operations)
 
     def whitelist_file_to_db(self, whitelistFileName: str, onlyInsert: bool = None):
         """
@@ -195,6 +95,7 @@ class ShodanParser:
     def parse_mongo_json_line(self, data, existing_comp=None):
         """
         TODO: DOCUMENT THIS BETTER
+        TODO: Move to DBHandler
         :param data:
         :param existing_comp:
         :return:
@@ -282,7 +183,7 @@ class ShodanParser:
         return {"computer": vuln_computer, "ports": ports, "cves": cves}
 
     def save_to_db(self):
-        self._save_cleaned_data()
+        self._save_computers()
 
     def add_line(self, line: str):
         try:
@@ -305,7 +206,7 @@ class ShodanParser:
 
     def parse_json_file(self, json_file_loc: str):
         """
-        Given the location of a json file, will parse it and add it to the database. 
+        Given the location of a json file, will parse it and add it to the database.
         :param json_file_loc: File name/location of json file to parse
         :return:
         """
@@ -313,7 +214,7 @@ class ShodanParser:
         file_md5 = Utility.calc_json_md5(json_file_loc)
 
         # Check if file was already parsed.
-        if self.db_Handler.file_already_parsed(file_md5=file_md5):
+        if self.file_already_parsed(file_md5=file_md5):
             return
 
         # Used to calculate how much time we spent parsing
@@ -323,19 +224,20 @@ class ShodanParser:
             for line in file:
                 self.add_line(line)
 
-            #whitelist_time = time.time()
+            # whitelist_time = time.time()
             # self.assign_whitelisted_ips()
-            #print(f"\rDone updating Important Computers. Time: {time.time() - whitelist_time}")
+            # print(f"\rDone updating Important Computers. Time: {time.time() - whitelist_time}")
 
             # Save the data to the db
-            self._save_cleaned_data()
+            self._save_computers()
 
             # Saving the md5 of the parsed file to the DB so we dont do it again.
-            self.db_Handler.save_parsed_file(file_md5=file_md5, json_file_loc=json_file_loc)
+            self.db_Handler.save_parsed_file(
+                file_md5=file_md5, json_file_loc=json_file_loc)
 
             print(f"\rFinished File! Total Time: {time.time() - start}")
 
-    def _save_cleaned_data(self):
+    def _save_computers(self):
         self.db_Handler.save_computers(computers=self.computers)
 
         # Clear current computers in memory since they are now stored in DB
@@ -345,8 +247,7 @@ class ShodanParser:
     def output_computer_summary(self, file_loc: str, file_type: FileType = FileType.json):
         logger.info(f"Outputting summary {file_loc} {file_type}")
 
-        logger.debug("Getting computers")
-        vuln_computers = VulnerableComputer.objects
+        vuln_computers = self.db_Handler.get_all_computers()
 
         if file_type == FileType.json or file_type == FileType.both:
             self._output_json(filename=file_loc,
@@ -354,58 +255,6 @@ class ShodanParser:
         if file_type == FileType.csv or file_type == FileType.both:
             self._output_csv(filename=file_loc,
                              vulnerable_computers=vuln_computers)
-
-    def save_cve_to_json(self, json_file_loc):
-        """Saves the CVE table from the database to a file. 
-        Useful if you want to reuse it in a new in-memory db 
-        without redownloading all of the information.
-
-        Args:
-            json_file_loc (_type_): Location to save json file
-        """
-        try:
-            logger.info(f"Opening output stream {json_file_loc}")
-            with open(json_file_loc, 'w') as f:
-                cves = CVE.objects
-                for cve in cves:
-                    v = json.loads(cve.to_json())
-                    f.write(json.dumps(v) + "\n")
-        except Exception:
-            logger.exception("Unabled to save CVE file, will have to manually be redownloaded.")
-            
-
-    def load_cve_json(self, json_file_loc):
-        """
-        Loads the json of CVE's into the database.
-        Useful for when you are running an in-memory db.
-
-        Args:
-            json_file_loc (_type_): Location of json file
-        """
-        
-        file_data = []
-        # Loading or Opening the json file
-        try:
-            logger.info(f"Loading cve json file. {json_file_loc}")
-            with open(json_file_loc, 'r') as file:
-                for line in file:
-                    line = json.loads(line)
-                    line["lastModifiedDate"] = datetime.datetime.fromtimestamp(float(line["lastModifiedDate"]["$date"]) / 1000,
-                                                                        timezone.utc)
-                    line["publishedDate"] = datetime.datetime.fromtimestamp(float(line["publishedDate"]["$date"]) / 1000,
-                                                                    timezone.utc)
-                    file_data.append(line)
-
-                logger.info("inserting cve's into database")  
-                cve_table = CVE._get_collection()
-                cve_table.insert_many(file_data)
-
-                # Make CVE's from file are up to date.
-                self.check_cve_modified()
-        except FileNotFoundError:
-            logger.info("CVE file not found, ignoring call")
-        except Exception as e:
-            logger.exception(f"Unhandled error! {e}")
 
     def _output_csv(self, vulnerable_computers: List[VulnerableComputer], filename: str):
         """ Outputs the given vulnerable computers objects to csv
@@ -478,8 +327,25 @@ class ShodanParser:
                 for cve in o.cve_history:
                     csv_row[f"Open CVE's on {cve.date_observed}"] += f"{cve.cveName} "
 
-                logging.debug(f"Writing row to file: {filename} {csv_row}")
+                logger.debug(f"Writing row to file: {filename} {csv_row}")
                 writer.writerow(csv_row)
+
+    def file_already_parsed(self, file_md5: str) -> bool:
+        """
+        Determines whether a file was already parsed in the DB by checking the MD5 value against existing DB entries.
+
+        Args:
+            file_md5 (str): The MD5 value of the json file.
+        Returns:
+            bool: Whether the file is already parsed are not
+        """
+        logger.info(f"Checking if file already parsed. {file_md5}")
+        file = self.db_Handler.get_parsed_file(file_md5=file_md5)
+
+        if file:
+            logger.info("Already parsed!")
+            return True
+        return False
 
     def _output_json(self, filename: str, vulnerable_computers: List[VulnerableComputer]):
         """ Outputs the given vulnerable computers objects to json
@@ -495,10 +361,8 @@ class ShodanParser:
         logger.info(f"Writing {filename} to json file")
         with open(filename, "w") as fp:
             for computer in vulnerable_computers:
-                # Getting the BSON version of the row
-                row = computer.to_mongo()
-                # Setting the date time to be readable
-                DEFAULT_JSON_OPTIONS.datetime_representation = 2
+                row = self.db_Handler.row_to_json(computer)
 
-                logging.debug(f"Writing row to file: {filename} {row}")
-                fp.write(dumps(row) + "\n")
+                logger.debug(f"Writing row to file: {filename} {row}")
+
+                fp.write(row + "\n")
