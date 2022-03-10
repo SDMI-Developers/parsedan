@@ -47,6 +47,7 @@ class Computer(Base):
     org = Column(String)
     lat = Column(Float(precision=4))
     lng = Column(Float(precision=4))
+    score = Column(Float(precision=2))
 
     # TODO: Make this a calculated value??
     ip_str = Column(String)

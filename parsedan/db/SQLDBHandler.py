@@ -19,20 +19,60 @@ logger = logging.getLogger(__name__)
 
 
 def multi_run_wrapper(args):
-    return multi(*args)
+    return _multi_calculate_scores(*args)
 
 
-def multi(offset, limit, connection_string):
+def _multi_calculate_scores(offset: int, limit: int, connection_string: str, nist_cve_cache: dict, q: multiprocessing.Queue):
+    """ Function to calculate scores.
+    Must be outside of the class due to pickling
+
+    Args:
+        offset (int): Offset of DB
+        limit (int): Limit of DB
+        connection_string (str): Connection string to db
+        nist_cve_cache (dict): the cve cache (use a manager dict)
+        q (multiprocessing.Queue): 
+
+    """
+    q.put(0)
+
+    # Connect to the database
     dbhandler = DBHandler(connection_string)
-    query = dbhandler.session.query(Computer).offset(offset).limit(
-        limit).options(sqlalchemy.orm.selectinload(Computer.cve_history))
-    total = 0
-    for comp in query:
-        total += len(comp.cve_history)
 
-    # print(offset, limit, total)
+    # Query all the computers
+    query: List[Computer] = dbhandler.session.query(
+        Computer).order_by(Computer.ip).offset(offset).limit(limit)
+
+    computers = {}
+
+    for computer in query:
+        computers[computer.ip] = {}
+        computers[computer.ip]["instance"] = computer
+        computers[computer.ip]["port_history"] = []
+        computers[computer.ip]["cve_history"] = []
+
+    ip_list = list(computers.keys())
+    q2 = dbhandler.session.query(PortHistory).filter(
+        PortHistory.computer_id.in_(ip_list))
+    q3 = dbhandler.session.query(CVEHistory).filter(
+        CVEHistory.computer_id.in_(ip_list))
+
+    for cve in q3:
+        computers[cve.computer_id]["cve_history"].append(cve)
+
+    for port in q2:
+        computers[port.computer_id]["port_history"].append(port)
+    # Call calculate score for each comp
+    for comp in computers.values():
+        computer: Computer = comp["instance"]
+        cves: List[CVEHistory] = comp["cve_history"]
+        ports: List[PortHistory] = comp["port_history"]
+        computer.score = dbhandler._calculate_score(
+            computer, cves, ports, nist_cve_cache)
+    dbhandler.session.commit()
+
+    # Disconnect the db from this core
     dbhandler._disconnect()
-    print(f"Done: {offset+limit}", end="\r")
 
 
 class DBHandler:
@@ -40,7 +80,7 @@ class DBHandler:
     Makes it super easy to go from one db engine to the next for testing
     purposes (mongo/sqlalchemy)
     """
-
+    support_multi_core = True
     def __init__(self, db_connection_string: str = None):
         self.db_connection_string = db_connection_string
         self._connect_to_db()
@@ -142,7 +182,7 @@ class DBHandler:
         # Max items to allow per "flush" session
         MAX_ITEMS = 10000
         for i in range(0, len(values), MAX_ITEMS):
-            print(f"Executing: {i}/{len(values)}", end="\r")
+            logger.debug(f"Executing: {i}/{len(values)}")
 
             # Get the primary keys that are part of the table
             primary_keys = [key.name for key in inspect(db_class).primary_key]
@@ -213,66 +253,158 @@ class DBHandler:
         logger.info("Calculating scores")
         start = time.time()
 
-        # Holds our cvss data so it can be passed around and not reloaded
-        cvss_cache = {}
-        tot = 0
-        operations = []
-
-        # for i in range(0, row_count, LIMIT_AMT):
-        #     start = time.time()
-        #     tot += x(i+LIMIT_AMT, LIMIT_AMT)
-        #     print(f"{time.time() - start} {tot}")
-        # self.session.close()
-        # self.engine.dispose()
-
-        # s = 1000
-        # p = 3
-        # ps = []
-
-        # start = time.time()
-        # x(0, s*4, self.Session)
-        # print(f"{time.time() - start}")
-
-        # Amount to calculate scores for at a time
-        LIMIT_AMT = 1000
-
-        row_count = 50000  # self.session.query(Computer).count()
-        jobs = []
-        for i in range(0, row_count, LIMIT_AMT):
-            jobs.append((i, LIMIT_AMT, self.db_connection_string))
-        start = time.time()
-        p = ThreadPool(3)
-        #p = multiprocessing.Pool(4)
-        p.map_async(multi_run_wrapper, jobs).get()
-        print(f"{time.time() - start}")
-        p.close()
+        LIMIT_AMT = 12000
 
         start = time.time()
-        for i in range(0, row_count, LIMIT_AMT):
-            multi(i, LIMIT_AMT, self.db_connection_string)
-        print(f"{time.time() - start}")
+        row_count = self.session.query(Computer).count()
+        #p = ThreadPool(4)
+        p = multiprocessing.Pool(multiprocessing.cpu_count() - 1)
+        m = multiprocessing.Manager()
+        q = m.Queue()
 
-        # self.session.close()
-        # self.engine.dispose()
-        # start = time.time()
+        # Cache of cve's from nist
+        nist_cve_cache = m.dict()
 
-        # print(f"{time.time() - start}")
+        # Make sure limit is never greater then row
+        if LIMIT_AMT > row_count:
+            LIMIT_AMT = row_count
 
-        # cmps: List[VulnerableComputer] = VulnerableComputer.objects(
-        #     pk__in=ip_list).skip(i).limit(LIMIT_AMT)
+        if self.support_multi_core:
+            # Build jobs for each process
+            jobs = []
+            for i in range(0, row_count, LIMIT_AMT):
+                jobs.append(
+                    (i, LIMIT_AMT, self.db_connection_string, nist_cve_cache, q))
 
-        # for comp in cmps:
-        #     score = self._calculate_score(comp, cvss_cache)
-        #     # Updating highscore
-        #     if score > comp.high_score:
-        #         comp.high_score = score
-        #     comp.current_score = score
-        #     computer_dict = comp._data
+            results = p.map_async(multi_run_wrapper, jobs).get()
 
-        #     # Remove these children as it doesnt matter if it exists or not
-        #     # If i dont remove it, id have to do _data on them as well
-        #     del computer_dict["port_history"]
-        #     del computer_dict["cve_history"]
-        #     # Adding this to our bulk operations
-        #     operations.append(UpdateOne({"_id": comp.ip}, {
-        #                       "$set": computer_dict}, upsert=True))
+            logger.debug(f"Time to calculate scores: {time.time() - start}")
+
+            p.close()
+        else:
+            logger.error("Miltiprocessless support not implemented")
+            
+
+    def _calculate_score(self, computer: Computer, cves: List[CVEHistory], ports: List[PortHistory], cvss_cache: dict) -> float:
+        """ Calculates score for a given computer
+        Args:
+            computer (VulnerableComputer): Computer to calculate score for.
+            cves (List[CVEHistory]): List of CVE's that belong to that computer
+            ports (List[PortHistory],): List of ports that belong to that computer
+
+        Returns:
+            float: The score that was calculated.
+        """
+
+        # Sort dates Newest to oldest
+        ports = sorted(
+            ports, key=lambda x: x.date_observed, reverse=True)
+
+        # Getting the most current date of port history
+        most_current_date = ports[0].date_observed
+
+        range_date = most_current_date - datetime.timedelta(days=5)
+
+        # Only include ports/cves for the past 5 days.
+        ports = list(filter(lambda x: x.date_observed >= range_date, ports))
+        cves = list(filter(lambda x: x.date_observed >= range_date, cves))
+
+        date_added = computer.date_added
+
+        # TODO: Define what vulnerable means (like only count number of days vuln if contains bad port open)
+
+        # Getting unique ports
+        distinct_ports = set()
+        for port in ports:
+            if port.port not in distinct_ports:
+                distinct_ports.add(port.port)
+
+        
+
+        # Basically if no CVE's and ONLY 443/80 open then 0 score
+        if len(cves) == 0:  
+            if len(distinct_ports) == 1:
+                if 80 in distinct_ports or 443 in distinct_ports:
+                    return 0
+
+            if len(distinct_ports) == 2:
+                if 80 in distinct_ports and 443 in distinct_ports:
+                    return 0
+        
+        num_days_vuln = (most_current_date - date_added).days
+
+        num_days_vuln_score = 10 / 10
+        if num_days_vuln < 1: # FRESH COMPUTER HIGH ALERT
+            num_days_vuln_score = 10 / 10
+        elif num_days_vuln < 7:
+            num_days_vuln_score = 9 / 10
+        elif num_days_vuln < 14:
+            num_days_vuln_score = 5 / 10
+        elif num_days_vuln > 30:
+            num_days_vuln_score = 10 / 10
+
+        score = num_days_vuln_score * 0.1
+
+        # TODO: List and rank open ports
+        # Num of open ports section 10%
+
+        num_open_ports = len(distinct_ports)
+        num_ports_score = 10 / 10
+
+        if num_open_ports < 2:
+            num_ports_score = 1 / 10
+        elif num_open_ports < 4:
+            num_ports_score = 5 / 10
+        elif num_open_ports < 10:
+            num_ports_score = 10 / 10
+
+        score += num_ports_score * 0.1
+
+        # Num of cves section 10%
+        # Getting unique cves
+        distinct_cves = set()
+        cvssScores = []
+
+        for cve in cves:
+            # Create a set of unique cve names
+            if cve.cve_name not in distinct_cves:
+                distinct_cves.add( cve.cve_name)
+            cve_name = cve.cve_name
+
+            # Fetch cvss scores for each cve
+            if cve_name not in cvss_cache:
+                try:
+                    cvss_cache[cve_name] = self.session.query(CVE).get(cve_name)
+                except Exception:
+                    print(f"Couldnt find that CVE {cve_name}")
+                    logger.debug(f"Couldnt find that CVE {cve_name}")
+                    continue
+
+            cve: CVE = cvss_cache[cve_name]
+            if cve.cvss_30:
+                cvssScores.append(cve.cvss_30)
+            elif cve.cvss_20:
+                cvssScores.append(cve.cvss_20)
+
+        numOfCVES = len(distinct_cves)
+        if numOfCVES == 0:
+            numOfCVESScore = 0 / 10
+        elif numOfCVES < 2:
+            numOfCVESScore = 8 / 10
+        elif numOfCVES < 4:
+            numOfCVESScore = 9 / 10
+        else:
+            numOfCVESScore = 10 / 10
+        score += numOfCVESScore * 0.1
+
+
+         # CVSS Scoring (15% Avg/35% Highest)
+        cvssScoresLen = len(cvssScores)
+        if cvssScoresLen > 0:
+            cvssAvg = sum(cvssScores) / len(cvssScores)
+            cvssMax = max(cvssScores)
+            score += (cvssAvg / 10) * 0.15
+            score += (cvssMax / 10) * 0.35
+
+        score += 0.20
+        return score * 100

@@ -20,7 +20,7 @@ dbhandler = DBHandler(
 
 # dbhandler = DBHandler("sqlite:///db1.db")
 
-# dbhandler.load_cve_json("/home/jdolbe1/.parsedan/cve_data.json")
+
 
 
 def parse(file):
@@ -116,8 +116,10 @@ def parse_files():
         parse(file)
 
 
+    #dbhandler.load_cve_json("/home/jdolbe1/.parsedan/cve_data.json")
 def calculate_scores():
+    #dbhandler.load_cve_json("./cve_data.json")
     dbhandler._calculate_scores()
 
-
-calculate_scores()
+if __name__ == '__main__':    
+    calculate_scores()
