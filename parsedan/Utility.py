@@ -6,8 +6,6 @@ from json import JSONDecodeError
 from netaddr import IPNetwork
 from requests import get
 import logging
-from parsedan.db.mongomodels import *
-from bson.json_util import loads, dumps, DEFAULT_JSON_OPTIONS
 logger = logging.getLogger(__name__)
 
 
