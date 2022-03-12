@@ -4,8 +4,6 @@ import logging
 import os
 import sys
 import shodan
-from mongoengine import connect
-from pymongo_inmemory import MongoClient
 import click
 from pathlib import Path
 from parsedan.CLI_Handler import CLIHandler
@@ -89,9 +87,10 @@ def _erase_line():
 @click.option('--limit', help='The number of results you want to download. -1 to download all the data possible. DEFAULT: -1', default=-1, type=int)
 # @click.option('--whitelist-file', help='Provide a location to a newline delimited file of ip ranges you want to make as important.', default=None, type=str)
 @click.option('--filetype', help='Type of file to create, options are "csv", "json", or "both". Default "both"', default="both", type=str)
+@click.option('--reset-db/--no-reset-db', help="Whether to reset the database. DEFAULT: False", default=False)
 @click.argument('output-filename', metavar='<filename>')
 @click.argument('query', metavar='<search query>', nargs=-1)
-def start(output_original, output_partial_summary, limit, filetype: str, output_filename, query):
+def start(output_original, output_partial_summary, limit, filetype: str, reset_db: bool, output_filename, query):
     logger.info("Called start with options - " + str(locals()))
     cli_handler.echo_header()
 
@@ -140,37 +139,16 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
         logger.debug("Setting limit to total.")
         limit = total
 
-    logger.info("Creating mongodb client.")
-    print("Creating and connecting to mongodb...", end="\r")
-    with MongoClient() as client:
-        _erase_line()
+    shodan_parser = ShodanParser(
+        connection_string=f"sqlite:///{home_dir}/parsedan.db")
 
-        logger.info(f"Client created {client}")
+    # Reset the database if param supplied
+    if reset_db:
+        shodan_parser.db_Handler._clear_db()
 
-        # TODO: Move this to the DBHandler class
-        mongo_db_connection = f"mongodb://{client.HOST}:{client.address[1]}/shodan"
-        logger.debug(f"MongoDB Connection String: {mongo_db_connection}")
-
-        # Connect our ORM to the in-memory pymongo
-        shodan_parser = ShodanParser(connection_string=mongo_db_connection)
-
-        cve_data_path = os.path.join(home_dir, "cve_data.json")
-
-        if os.path.exists(cve_data_path):
-            logger.info("CVE Data exists")
-            print("Loading CVE data from cache.", end="\r")
-            shodan_parser.db_Handler.load_cve_json(cve_data_path)
-        else:
-            print("Making sure CVE data is up-to-date", end="\r")
-            shodan_parser.db_Handler.check_cve_modified()
-
-            print("Saving updated CVE data to cache file.", end="\r")
-            shodan_parser.db_Handler.save_cve_to_json(cve_data_path)
-           
-        # Erasing line left over from CVE stuff
-        _erase_line()
-
+    try:
         def _save(partial: bool = False):
+            logger.info("Saving data!")
             shodan_parser.save_to_db()
             if partial and output_partial_summary is False:
                 return
@@ -181,54 +159,52 @@ def start(output_original, output_partial_summary, limit, filetype: str, output_
             shodan_parser.output_computer_summary(
                 file_loc=output_filename, file_type=FileType.str_to_enum(filetype))
 
-        try:
-            logger.info("Get search cursors.")
-            print(f"Loading results...", end="\r")
-            cursor = api.search_cursor(query, minify=False)
-            # Clearing previous line
-            _erase_line()
+        logger.info("Get search cursors.")
+        print(f"Loading results...", end="\r")
+        cursor = api.search_cursor(query, minify=False)
+        # Clearing previous line
+        _erase_line()
+        i = 1
+        # Save every x results.
+        save_every = 1000
 
-            i = 1
-            # Save every x results.
-            save_every = 1000
+        # Output the original shodan GZIPPED file
+        if output_original:
+            gzipped_file_loc = "_shodan_" + output_filename + ".gz"
+            logger.info(f"Opening GZIPPed file at {gzipped_file_loc}")
+            fout = gzip.open(gzipped_file_loc, 'w')
+
+        # Loop over results from shodan
+        for cur in cursor:
+            print(f"Line: {i}/{limit}", end="\r")
+
+            shodan_parser.add_line(line=cur)
+            if i % save_every == 0:
+                _save(partial=True)
 
             if output_original:
-                gzipped_file_loc = "_shodan_" + output_filename + ".gz"
-                logger.info(f"Opening GZIPPed file at {gzipped_file_loc}")
-                fout = gzip.open(gzipped_file_loc, 'w')
-
-            for cur in cursor:
-                print(f"Line: {i}/{limit}", end="\r")
                 line = json.dumps(cur) + '\n'
-                shodan_parser.add_line(line=line)
+                logger.debug("Writing line to gziped file")
+                fout.write(line.encode('utf-8'))
 
-                if i % save_every == 0:
-                    _save(partial=True)
+            # Stop parsing
+            if i >= limit:
+                logger.info("Limit hit, done parsing!")
+                print(f"Line: {i}/{limit}")
+                _save()
+                break
+            i += 1
 
-                if output_original:
-                    logger.debug("Writing line to gziped file")
-                    fout.write(line.encode('utf-8'))
-
-                # Stop parsing
-                if i >= limit:
-                    logger.info("Limit hit, done parsing!")
-                    print(f"Line: {i}/{limit}")
-                    break
-                i += 1
-
-            if output_original:
-                logger.debug("Closing gzip writer")
-                fout.close()
-        except shodan.APIError as e:
-            logger.exception(f"api info returned error! Error: {e}")
-            logger.info("Saving what data we currently have!")
-            _save()
-
-        except Exception as e:
-            logger.exception(f"Unknown exception occured! {e}")
-            sys.exit()
-
+        if output_original:
+            logger.debug("Closing gzip writer")
+            fout.close()
+    except shodan.APIError as e:
+        logger.exception(f"api info returned error! Error: {e}")
+        logger.info("Saving what data we currently have!")
         _save()
+    except Exception as e:
+        logger.exception(f"Unknown exception occured! {e}")
+        sys.exit()
 
 
 @cli.command(help="Set shodan key.")

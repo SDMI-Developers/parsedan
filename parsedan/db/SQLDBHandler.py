@@ -10,7 +10,8 @@ from typing import List
 import logging
 import sqlalchemy
 from sqlalchemy.orm import sessionmaker
-from parsedan.db.sqlmodels import CVE, Base, CVEHistory, Computer, PortHistory
+from parsedan.Nist import Nist
+from parsedan.db.sqlmodels import CVE, Base, CVEHistory, Computer, ParsedFile, PortHistory, Job
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy import inspect
 from sqlalchemy.orm import scoped_session
@@ -31,7 +32,7 @@ def _multi_calculate_scores(offset: int, limit: int, connection_string: str, nis
         limit (int): Limit of DB
         connection_string (str): Connection string to db
         nist_cve_cache (dict): the cve cache (use a manager dict)
-        q (multiprocessing.Queue): 
+        q (multiprocessing.Queue):
 
     """
     q.put(0)
@@ -81,13 +82,20 @@ class DBHandler:
     purposes (mongo/sqlalchemy)
     """
     support_multi_core = True
-    def __init__(self, db_connection_string: str = None):
+
+    def __init__(self, db_connection_string: str = None, check_nist_up_to_date: bool = True):
         self.db_connection_string = db_connection_string
         self._connect_to_db()
+        self.nist = Nist(self)
+
+        if check_nist_up_to_date:
+            # Make sure CVE data is up-to-date
+            self.nist.check_cve_modified()
 
     def _connect_to_db(self):
         engine = create_engine(self.db_connection_string)
         Base.metadata.create_all(engine)
+
         session_factory = sessionmaker(bind=engine)
         Session = scoped_session(session_factory)
         self.engine = engine
@@ -100,77 +108,16 @@ class DBHandler:
 
     def _clear_db(self):
         """
-        Call this function if you want to clear the database but don't want to delete any of the downloaded
-        CVE data
+        Call this function if you want to clear the database
         """
-        pass
+        logger.info("Clearing the database")
+        engine = self.engine
+        logger.debug("Dropping all tables")
+        Base.metadata.drop_all(engine)
 
-    def save_cve_to_json(self, json_file_loc):
-        """Saves the CVE table from the database to a file.
-        Useful if you want to reuse it in a new in-memory db
-        without redownloading all of the information.
-
-        Args:
-            json_file_loc (_type_): Location to save json file
-        """
-        pass
-
-    def load_cve_json(self, json_file_loc):
-        """
-        Loads the json of CVE's into the database.
-        Useful for when you are running an in-memory db.
-
-        Args:
-            json_file_loc (_type_): Location of json file
-        """
-        self.session.query(CVE).delete()
-        file_data = []
-        # Loading or Opening the json file
-        try:
-            logger.info(f"Loading cve json file. {json_file_loc}")
-            cve_load_start_time = time.time()
-            with open(json_file_loc, 'r') as file:
-                i = 0
-                for line in file:
-                    print(i, end="\r")
-                    i += 1
-                    line = json.loads(line)
-                    cve = CVE()
-
-                    line["lastModifiedDate"] = datetime.datetime.fromtimestamp(float(line["lastModifiedDate"]["$date"]) / 1000,
-                                                                               datetime.timezone.utc)
-                    line["publishedDate"] = datetime.datetime.fromtimestamp(float(line["publishedDate"]["$date"]) / 1000,
-                                                                            datetime.timezone.utc)
-
-                    cve.last_modified_date = line["lastModifiedDate"]
-                    cve.published_date = line["publishedDate"]
-
-                    if "cvss20" in line:
-                        cve.cvss_20 = line["cvss20"]
-
-                    if "cvss30" in line:
-                        cve.cvss_30 = line["cvss30"]
-
-                    cve.cve_name = line["_id"]
-
-                    file_data.append(cve)
-
-                logger.info("inserting cve's into database")
-
-                logger.debug(
-                    f"Time to load CVES: {time.time() - cve_load_start_time}")
-                self.session.bulk_save_objects(file_data)
-                self.session.commit()
-
-                # Make CVE's from file are up to date.
-                # self.check_cve_modified()
-        except FileNotFoundError:
-            logger.info("CVE file not found, ignoring call")
-        except Exception as e:
-            logger.exception(f"Unhandled error! {e}")
-
-    def check_cve_modified(self):
-        pass
+        logger.debug("Recreating all tables")
+        Base.metadata.create_all(engine)
+        self.session.commit()
 
     def upsert_objects(self, db_class, values: list):
         if len(values) == 0:
@@ -188,9 +135,10 @@ class DBHandler:
             primary_keys = [key.name for key in inspect(db_class).primary_key]
 
             # Define the insert statement
-            stmt = insert(db_class).returning(
-                sqlalchemy.column("xmax") == 0
-            ).values(values[i:i+MAX_ITEMS])
+            stmt = insert(db_class).values(values[i:i+MAX_ITEMS])
+            # stmt = insert(db_class).returning(
+            #     sqlalchemy.column("xmax") == 0
+            # ).values(values[i:i+MAX_ITEMS])
 
             # define dict of non-primary keys for updating
             update_dict = {
@@ -211,32 +159,19 @@ class DBHandler:
                 stmt = stmt.on_conflict_do_nothing(
                     index_elements=primary_keys
                 )
+
+            # Execute the changes
             self.session.execute(stmt)
             # Figure out created vs updated
             results = self.session.execute(stmt)
-            for _ in results:
-                if _[0]:
-                    created += 1
-                else:
-                    updated += 1
+            # for _ in results:
+            #     if _[0]:
+            #         created += 1
+            #     else:
+            #         updated += 1
             self.session.flush()
 
-        print(f"Created: {created} Updated: {updated}")
-
-    def recreate_cve_table(self, _modify: bool = None):
-        """
-        Will download one by one all files from nist.gov and
-        save them into the db.
-        """
-        pass
-
-    def save_nist_cve_to_db(self, nvdNistGzJsonURL: str):
-        """
-        :param nvdNistGzJsonURL: URL of gzipped nist file.
-        :return: None if json failed to parse, else return results of
-        mongoengine insert
-        """
-        pass
+        # print(f"Created: {created} Updated: {updated}")
 
     def save_parsed_file(self, file_md5: str, json_file_loc: str):
         """ Save the given md5/loc to the db so we can tell if
@@ -246,7 +181,46 @@ class DBHandler:
             file_md5 (str): MD5 of the file
             json_file_loc (str): Location of the file
         """
-        pass
+        logger.debug("Creating parsed file")
+        parsed_file = ParsedFile()
+        parsed_file.datetime_parsed = datetime.datetime.now()
+        parsed_file.file_md5 = file_md5
+        parsed_file.filename = json_file_loc
+        logger.debug("Committing parsed file")
+        self.session.add(parsed_file)
+        self.session.commit()
+
+    def is_file_parsed(self, file_md5: str) -> bool:
+        """
+        Determines whether a file was already parsed in the DB by checking the MD5 value against existing DB entries.
+
+        Args:
+            file_md5 (str): The MD5 value of the json file.
+        Returns:
+            bool: Whether the file is already parsed are not
+        """
+        logger.info(f"Checking if file already parsed. {file_md5}")
+        file = self.session.query(ParsedFile).filter(
+            ParsedFile.file_md5 == file_md5).first()
+        if file:
+            logger.debug("Already parsed!")
+            return True
+        logger.debug("Not parsed yet!")
+        return False
+
+    def get_computers(self, offset, limit) -> List[Computer]:
+        return self.session.query(Computer).options(sqlalchemy.orm.selectinload(Computer.cve_history), sqlalchemy.orm.selectinload(Computer.port_history)).offset(offset).limit(limit).all()
+
+    def get_dates(self):
+        cve_dates = self.session.query(
+            CVEHistory.date_observed).distinct(CVEHistory.date_observed)
+        cve_dates = [r.date_observed for r in cve_dates]
+
+        port_dates = self.session.query(
+            PortHistory.date_observed).distinct(PortHistory.date_observed)
+        port_dates = [r.date_observed for r in port_dates]
+        
+        return (cve_dates, port_dates)
 
     def _calculate_scores(self):
 
@@ -257,7 +231,7 @@ class DBHandler:
 
         start = time.time()
         row_count = self.session.query(Computer).count()
-        #p = ThreadPool(4)
+        # p = ThreadPool(4)
         p = multiprocessing.Pool(multiprocessing.cpu_count() - 1)
         m = multiprocessing.Manager()
         q = m.Queue()
@@ -283,7 +257,6 @@ class DBHandler:
             p.close()
         else:
             logger.error("Miltiprocessless support not implemented")
-            
 
     def _calculate_score(self, computer: Computer, cves: List[CVEHistory], ports: List[PortHistory], cvss_cache: dict) -> float:
         """ Calculates score for a given computer
@@ -319,10 +292,8 @@ class DBHandler:
             if port.port not in distinct_ports:
                 distinct_ports.add(port.port)
 
-        
-
         # Basically if no CVE's and ONLY 443/80 open then 0 score
-        if len(cves) == 0:  
+        if len(cves) == 0:
             if len(distinct_ports) == 1:
                 if 80 in distinct_ports or 443 in distinct_ports:
                     return 0
@@ -330,11 +301,11 @@ class DBHandler:
             if len(distinct_ports) == 2:
                 if 80 in distinct_ports and 443 in distinct_ports:
                     return 0
-        
+
         num_days_vuln = (most_current_date - date_added).days
 
         num_days_vuln_score = 10 / 10
-        if num_days_vuln < 1: # FRESH COMPUTER HIGH ALERT
+        if num_days_vuln < 1:  # FRESH COMPUTER HIGH ALERT
             num_days_vuln_score = 10 / 10
         elif num_days_vuln < 7:
             num_days_vuln_score = 9 / 10
@@ -368,13 +339,14 @@ class DBHandler:
         for cve in cves:
             # Create a set of unique cve names
             if cve.cve_name not in distinct_cves:
-                distinct_cves.add( cve.cve_name)
+                distinct_cves.add(cve.cve_name)
             cve_name = cve.cve_name
 
             # Fetch cvss scores for each cve
             if cve_name not in cvss_cache:
                 try:
-                    cvss_cache[cve_name] = self.session.query(CVE).get(cve_name)
+                    cvss_cache[cve_name] = self.session.query(
+                        CVE).get(cve_name)
                 except Exception:
                     print(f"Couldnt find that CVE {cve_name}")
                     logger.debug(f"Couldnt find that CVE {cve_name}")
@@ -397,8 +369,7 @@ class DBHandler:
             numOfCVESScore = 10 / 10
         score += numOfCVESScore * 0.1
 
-
-         # CVSS Scoring (15% Avg/35% Highest)
+        # CVSS Scoring (15% Avg/35% Highest)
         cvssScoresLen = len(cvssScores)
         if cvssScoresLen > 0:
             cvssAvg = sum(cvssScores) / len(cvssScores)

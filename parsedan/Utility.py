@@ -9,6 +9,8 @@ import logging
 from parsedan.db.mongomodels import *
 from bson.json_util import loads, dumps, DEFAULT_JSON_OPTIONS
 logger = logging.getLogger(__name__)
+
+
 class Utility:
 
     @staticmethod
@@ -84,5 +86,3 @@ class Utility:
             logger.exception(msg)
             print(msg)
             sys.exit()
-
-

@@ -40,7 +40,9 @@
 ## About The Project
 
 <!-- [![Parsedan Screen Shot][product-screenshot]](https://example.com) -->
-WIP
+This project was writen to download data from shodan's api, parsing it, and scoring it. In its current state it uses a sqlite database to store objects. Every run of Parsedan will save to this database, so for example, you can run the program once a week and build a database of computers with scores for a given query.
+
+If you simply want to run the script for a one time use, from a fresh database, run with the command --reset-db.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
