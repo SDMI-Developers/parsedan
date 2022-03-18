@@ -103,7 +103,6 @@ def start(output_original, output_partial_summary, limit, filetype: str, reset_d
             "Please provide an api key by calling `parsedan init [APIKEY]`").show()
         sys.exit(1)
 
-    api = shodan.Shodan(API_KEY)
 
     # Create the query string out of the provided tuple
     query = ' '.join(query).strip()
@@ -128,6 +127,9 @@ def start(output_original, output_partial_summary, limit, filetype: str, reset_d
     output_filename.replace(".json", "")
     output_filename.replace(".csv", "")
 
+
+
+    api = shodan.Shodan(API_KEY)
     total = _query_shodan_api(api, query)
 
     # Cant have a limit greater then total
