@@ -38,7 +38,7 @@ def _multi_calculate_scores(offset: int, limit: int, connection_string: str, nis
     q.put(0)
 
     # Connect to the database
-    dbhandler = DBHandler(connection_string=connection_string, check_nist_up_to_date=False)
+    dbhandler = DBHandler(db_connection_string=connection_string, check_nist_up_to_date=False)
 
     # Query all the computers
     query: List[Computer] = dbhandler.session.query(
